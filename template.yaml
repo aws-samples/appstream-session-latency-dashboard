@@ -1,0 +1,91 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Create a delivery stream using Kinesis firehose to deliver the metrics collected from AppStream instance to an Opensearch domain.
+
+  A Lambda funciton will be attached to the Kinsis Firehose to select only the RTT metrics to be delivered.
+
+
+Parameters:
+  OpensearchDomainEndpoint:
+    Type: String
+    Description: The opensearch host.
+    Default: example-xxxxxxxxxxxxx.us-east-1.es.amazonaws.com
+
+  OpensearchRegion:
+    Type: String
+    Description: The region where the Opensearch domain is.
+    Default: us-east-1
+
+  OpensearchIndex:
+    Type: String
+    Description: The Opensearch index that the metrics will pushed to opensearch with.
+    Default: indexdcv
+    AllowedPattern: '[a-z0-9]+\b'
+
+Resources:
+  PublishMetricsFunction:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      CodeUri: Lambda_code/
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.9
+      Timeout: 10
+      MemorySize: 256
+      Architectures:
+        - x86_64
+      Layers:
+        - !Sub arn:aws:lambda:${AWS::Region}:017000801446:layer:AWSLambdaPowertoolsPython:21
+      Environment:
+        Variables:
+          OS_HOST: !Ref OpensearchDomainEndpoint
+          OS_INDEX_NAME : !Ref OpensearchIndex
+          OS_REGION : !Ref OpensearchRegion
+      Events:
+        KinesisStream:
+            Type: Kinesis
+            Properties:
+                Stream: !GetAtt DCVMetricsStream.Arn
+                BatchSize: 100
+                StartingPosition: TRIM_HORIZON
+                MaximumRetryAttempts: 2
+                MaximumBatchingWindowInSeconds: 10
+                FunctionResponseTypes:
+                    - ReportBatchItemFailures 
+
+  DCVMetricsStream:
+    Type: AWS::Kinesis::Stream
+    Properties: 
+      Name: DCVMetricstoLambda
+      StreamModeDetails:
+       StreamMode: ON_DEMAND
+
+  AppStreamToKinsisRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - appstream.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: PushtoKinesisStream
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: 
+                - 'kinesis:PutRecord'
+                - 'kinesis:PutRecords'
+                Resource: !GetAtt DCVMetricsStream.Arn
+
+
+Outputs:
+  AppStreamPushtoKinesisRole:
+    Description: The ARN of the IAM role that would allow the agent on the AppStream Fleet to push the session metircs to the KinsisFirhose stream created
+    Value: !GetAtt AppStreamToKinsisRole.Arn
